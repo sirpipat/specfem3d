@@ -746,6 +746,8 @@ module specfem_par_coupling
   integer :: type_kpsv_fk = 0  ! incident wave type: 1 == P-wave, 2 == SV-wave
   real(kind=CUSTOM_REAL) :: xx0,yy0,zz0,ff0,tt0,tmax_fk,freq_sampling_fk,amplitude_fk
   real(kind=CUSTOM_REAL) :: phi_FK,theta_FK
+  integer:: time_function_type_fk
+  character(len=100) :: source_time_function_file_fk
 
   ! model
   real(kind=CUSTOM_REAL),dimension(:),allocatable :: alpha_FK,beta_FK,rho_FK,mu_FK,h_FK

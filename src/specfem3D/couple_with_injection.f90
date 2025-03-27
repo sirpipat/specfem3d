@@ -664,7 +664,7 @@
   if (myrank == 0) then
     ! output
     write(IMAIN,*) "  creating sample files:"
-    do i = 1,2
+    do i = 1,4
       ! filename
       write(filename1,'(a,i1,a)') "plot_FK_Veloc.",i,".dat"
       write(filename2,'(a,i1,a)') "plot_FK_Tract.",i,".dat"
@@ -679,10 +679,15 @@
 
       ! boundary point index
       ! first and last boundary point
+      ! first and last GLL point
       if (i == 1) then
         ipt = ipt_table(1,1)
-      else
+      elseif (i == 2) then
         ipt = ipt_table(1,num_abs_boundary_faces)
+      elseif (i == 3) then
+        ipt = ipt_table(NGLLSQUARE, floor(num_abs_boundary_faces / 2.0))
+      else
+        ipt = ipt_table(NGLLSQUARE, floor(num_abs_boundary_faces / 3.0))
       endif
 
       ! point locations
@@ -777,7 +782,8 @@
   use specfem_par_coupling, only: Veloc_FK, Tract_FK, &
                                   xx, yy, zz, xi1, xim, bdlambdamu, &
                                   nmx, nmy, nmz, NPTS_STORED, NPTS_INTERP, &
-                                  amplitude_fk, ipt_table,Z_REF_for_FK
+                                  amplitude_fk, ipt_table,Z_REF_for_FK, &
+                                  time_function_type_fk
 
   use specfem_par, only: num_abs_boundary_faces,abs_boundary_ispec
   use specfem_par_elastic,only: ispec_is_elastic
@@ -806,7 +812,8 @@
 
   complex(kind=CUSTOM_CMPLX), dimension(:,:), allocatable    :: coeff, field_f
   complex(kind=CUSTOM_CMPLX), dimension(:),   allocatable    :: tmp_f1, tmp_f2, tmp_f3
-  complex(kind=CUSTOM_CMPLX)                                 :: C_3,stf_coeff,a,b,c,d,delta_mat
+  complex(kind=CUSTOM_CMPLX), dimension(:),   allocatable    :: master_stf_coeff
+  complex(kind=CUSTOM_CMPLX)                                 :: stf_coeff, C_3,a,b,c,d,delta_mat
   complex(kind=CUSTOM_CMPLX)                                 :: dx_f,dz_f,txz_f,tzz_f
   complex(kind=CUSTOM_CMPLX)                                 :: N_mat(4,4),N1_mat(2,2)
 
@@ -1105,6 +1112,12 @@
       ! endif
   enddo
 
+  allocate(master_stf_coeff(nf2),stat=ier)
+  if (ier /= 0) call exit_MPI_without_rank('error allocating array 2226')
+  if (ier /= 0) stop 'error while allocating'
+  master_stf_coeff(:) = (0.0_CUSTOM_REAL,0.0_CUSTOM_REAL)
+  call compute_spectral_stf_coeff(time_function_type_fk, nf2, fvec, Tg, master_stf_coeff)               !! apodization window
+
   ! loop every point to calculate stress/velocity
   do iface = 1,num_abs_boundary_faces
     ispec = abs_boundary_ispec(iface)
@@ -1123,8 +1136,9 @@
       do ii = 1, nf2
         om = 2.0 * PI * fvec(ii)                                 !! pulsation
 
-        stf_coeff = exp(-(om * Tg/2)**2)                         !! apodization window
-        stf_coeff = stf_coeff * exp(cmplx(0,-1)*om*Tdelay)
+        ! comment this line and things go south very quickly
+        !stf_coeff(ii) = (stf_coeff(ii) / stf_coeff(ii)) * exp(-(om * Tg/2)**2)                         !! apodization window
+        stf_coeff = master_stf_coeff(ii) * exp(cmplx(0,-1)*om*Tdelay)
 
         ! bottom vector
         bot_vec(:) = (0.,0.)
@@ -1392,6 +1406,7 @@
   endif
 
   ! free temporary arrays
+  deallocate(master_stf_coeff)
   deallocate(fvec,coeff, field_f, field, dtmp)
   deallocate(tmp_f1, tmp_f2, tmp_f3, tmp_t1, tmp_t2, tmp_t3)
   deallocate(tmp_c)
@@ -1866,6 +1881,12 @@ end subroutine fk_propagator_ac
 
   type_kpsv_fk = 1  ! 1 == P-wave / 2 == SV-wave
 
+  time_function_type_fk = 1 ! 1 == Gaussian wavelet
+                            ! 2 == 1st derivative of Gaussian wavelet
+                            ! 3 == Ricker wavelet
+                            ! 4 == read from file
+  source_time_function_file_fk = 'source_time_function.dat'
+
   position_of_wavefront_not_read = .true.
 
   !! READING input file
@@ -1951,6 +1972,12 @@ end subroutine fk_propagator_ac
 
       case('AMPLITUDE')
         read(line,*)  keyword_tmp, amplitude_fk
+
+      case('TIME_FUNCTION_TYPE')
+        read(line,*)  keyword_tmp, time_function_type_fk
+
+     case('NAME_OF_SOURCE_FILE')
+        read(line,*)  keyword_tmp, source_time_function_file_fk
 
      end select
   !!------------------------------------------------------------------------------------------------------
@@ -4382,3 +4409,219 @@ contains
   
     end subroutine read_specfem_file
   
+  ! Generic function call for source-time function in spectral domain
+  ! You may add more options here
+  ! PARAMETER:
+  ! option:     1 = Gaussian window
+  !             else = Old Gaussian window
+  ! f:          frequency
+  ! Tg:         time window
+    subroutine compute_spectral_stf_coeff(option, nf2, f, Tg, val)
+
+      use constants, only: CUSTOM_REAL, PI
+      use specfem_par, only: t0
+      use specfem_par_coupling, only: source_time_function_file_fk
+  
+      implicit none
+  
+      integer, parameter :: CUSTOM_CMPLX = 8
+  
+      integer, intent(in) :: option, nf2
+      real(kind=CUSTOM_REAL), intent(in) :: Tg
+      real(kind=CUSTOM_REAL), intent(in) :: f(*)
+      complex(kind=CUSTOM_CMPLX), intent(inout):: val(*)
+  
+      ! local parameters
+      integer :: ii, iostat
+      integer :: npts, nf, npow
+      real(kind=CUSTOM_REAL) :: mpow(30)
+      real(kind=CUSTOM_REAL) :: dt
+      real(kind=CUSTOM_REAL), dimension(:), allocatable :: om
+      real(kind=CUSTOM_REAL), dimension(:), allocatable :: t_stf, x_stf, t_fk, x_fk
+      complex(kind=CUSTOM_CMPLX), dimension(:), allocatable :: val_fft
+      character(len=100) :: line
+  
+      integer, parameter :: taper_nlength = 20
+      real(kind=CUSTOM_REAL) :: taper
+  
+      ! SP: debugging
+      real(kind=CUSTOM_REAL) :: f_fk
+  
+      allocate(om(nf2))
+  
+      ! define the function here
+      select case(option)
+      case (1)
+        ! Gaussian window
+        do ii = 1, nf2
+          val(ii) = exp(-(PI * f(ii) * Tg)**2) * cmplx(1.0, 0.0)
+        enddo
+        
+      case (4)
+        ! read the number of lines in the input file
+        open(unit=10, file=trim(source_time_function_file_fk), status='old')
+        npts = 0
+        do
+            read(10, '(A)', iostat=iostat) line
+            if (iostat /= 0) exit
+            npts = npts + 1
+        end do
+        close(10)
+  
+        ! allocate arrays
+        nf = 2 * (nf2 - 1)            ! number of points for FFT
+        allocate(t_stf(npts), x_stf(npts))
+        allocate(t_fk(nf), x_fk(nf), val_fft(nf))
+  
+        ! read the souce time function file
+        open(unit=10, file=trim(source_time_function_file_fk), status='old')
+        do ii = 1, npts
+            read(10, *) t_stf(ii), x_stf(ii)
+        end do
+        close(10)
+  
+        ! interpolation
+        dt = 1.0_CUSTOM_REAL / (2.0_CUSTOM_REAL * f(nf2)) ! 2 * f(nf2) is the sampling frequency
+        do ii = 1, nf
+            t_fk(ii) = (ii - 1) * dt - t0
+        end do
+        call whittaker_shannon_interpolation(npts, t_stf, x_stf, nf, t_fk, x_fk)
+  
+        ! cosine tapering at both ends
+        if (taper_nlength > nf) then
+            print *, 'Error: taper_nlength is larger than nf'
+            stop
+        else
+            do ii = 1, taper_nlength
+                taper = (1.0 - cos(PI*(ii-1)/taper_nlength)) * 0.5
+                x_fk(ii) = x_fk(ii) * taper
+                x_fk(nf-ii+1) = x_fk(nf-ii+1) * taper
+            end do
+        end if
+  
+        ! SP: debugging
+        open(unit=10, file='OUTPUT_FILES/source_time_function_fk.dat', status='unknown')
+        do ii = 1, nf
+            write(10, *) t_fk(ii), x_fk(ii)
+        end do
+        close(10)
+  
+        ! compute source time function coefficients
+        npow = ceiling(log(nf*1.0)/log(2.0))
+        do ii = 1, npow
+            mpow(ii) = 2.0**(npow-ii)
+        end do
+  
+        do ii = 1, nf
+            val_fft(ii) = cmplx(x_fk(ii), 0.0_CUSTOM_REAL)
+        end do
+        call fftshift(val_fft, nf)
+  
+        ! SP: debugging
+        open(unit=10, file='OUTPUT_FILES/source_time_function_fk_prefft.dat', status='unknown')
+        do ii = 1, nf
+            write(10, *) t_fk(mod(ii + nf/2 - 1, nf) + 1), val_fft(ii)
+        end do
+        close(10)
+  
+        call FFT(npow, val_fft, 1.0, dt, mpow)
+  
+        ! SP: debugging
+        open(unit=10, file='OUTPUT_FILES/source_time_function_fk_postfft.dat', status='unknown')
+        do ii = 1, nf
+            f_fk = (mod(ii + nf/2, nf) - 1 - nf / 2.0_CUSTOM_REAL) / (nf * dt)
+            write(10, *) f_fk, val_fft(ii)
+        end do
+        close(10)
+        call fftshift(val_fft, nf)
+  
+        ! SP: debugging
+        open(unit=10, file='OUTPUT_FILES/source_time_function_fk_fft.dat', status='unknown')
+        do ii = 1, nf
+            f_fk = (ii - 1 - nf / 2.0_CUSTOM_REAL) / (nf * dt)
+            write(10, *) f_fk, val_fft(ii)
+        end do
+        close(10)
+  
+        val(:(nf2-1)) = val_fft((nf/2 + 1):nf)
+        val(nf2) = conjg(val_fft(1))
+  
+        ! SP: debugging
+        open(unit=10, file='OUTPUT_FILES/source_time_function_fk_fft_final.dat', status='unknown')
+        do ii = 1, nf2
+            write(10, *) f(ii), val(ii)
+        end do
+        close(10)
+  
+        ! deallocate local arrays
+        deallocate(t_stf, x_stf, t_fk, x_fk, val_fft)
+      case default
+        ! Default to old Gaussian window
+        do ii = 1,nf2
+          om(ii) = 2.0 * PI * f(ii)                               !! pulsation
+  
+          val(ii) = exp(-(om(ii) * Tg/2)**2) * cmplx(1.0, 0.0)
+        enddo
+      end select
+  
+      ! deallocate local arrays
+      deallocate(om)
+    end subroutine compute_spectral_stf_coeff
+
+    subroutine whittaker_shannon_interpolation(n, t, x, nq, tq, xq)
+
+      use specfem_par, only: CUSTOM_REAL
+  
+      implicit none
+      integer, intent(in) :: n, nq
+      real(kind=CUSTOM_REAL), intent(in) :: t(n), x(n), tq(nq)
+      real(kind=CUSTOM_REAL), intent(out) :: xq(nq)
+      real(kind=CUSTOM_REAL), parameter :: pi = acos(-1.0_CUSTOM_REAL)
+      real(kind=CUSTOM_REAL) :: sinc, sum
+      integer :: i, j
+  
+      ! Loop over the new time points
+      do i = 1, nq
+          sum = 0.0_CUSTOM_REAL
+          ! Loop over the original time points
+          do j = 1, n
+              ! Calculate the sinc function. If the denominator is zero, sinc is 1.
+              if (abs(tq(i) - t(j)) < 1.0e-10) then
+                  sinc = 1.0_CUSTOM_REAL
+              else
+                  sinc = sin(pi * (tq(i) - t(j)) / (t(2) - t(1))) / (pi * (tq(i) - t(j)) / (t(2) - t(1)))
+              endif
+              sum = sum + x(j) * sinc
+          end do
+          xq(i) = sum
+      end do
+    end subroutine whittaker_shannon_interpolation
+
+
+! -------------------------------------------------------------------------------------------------
+
+  ! Swap the left half and the right half of an array for FFT
+  !
+  ! Parameters:
+  ! s           1-D array of complex numbers with npts as the length
+  ! npts        the length of s, must be an even number
+  !
+  ! TODO: not implemented yet!!!!
+  ! If the length of the array is an odd number, the (origially) left half will have one more
+  ! element than the right half.
+    subroutine fftshift(s, npts)
+      implicit none
+
+      complex(kind=8),intent(inout) :: s(*)
+      integer, intent(in) :: npts
+
+      ! local parameters
+      integer :: ii
+      complex(kind=8) temp
+
+      do ii = 1, npts / 2
+        temp = s(ii)
+        s(ii) = s(ii + npts / 2)
+        s(ii + npts / 2) = temp
+      end do
+    end subroutine fftshift
