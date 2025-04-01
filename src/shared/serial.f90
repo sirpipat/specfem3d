@@ -184,6 +184,26 @@
 !-------------------------------------------------------------------------------------------------
 !
 
+  subroutine bcast_all_c(buffer, countval)
+
+    use my_mpi
+  
+    implicit none
+
+    integer, parameter :: CUSTOM_CMPLX = 8
+  
+    integer :: countval
+    complex(kind=CUSTOM_CMPLX), dimension(countval) :: buffer
+    complex(kind=CUSTOM_CMPLX) :: unused_c
+    
+    unused_c = buffer(1)
+
+    end subroutine bcast_all_c
+
+!
+!-------------------------------------------------------------------------------------------------
+!
+
   subroutine bcast_all_ch_array(buffer,countval,STRING_LEN)
 
     implicit none

@@ -314,6 +314,9 @@
     call bcast_all_singlecr(tt0)
     call bcast_all_singlecr(tmax_fk)
 
+    call bcast_all_singlecr(time_function_type_fk)
+    call bcast_all_ch_array(source_time_function_file_fk, 1, 100)
+
     ! converts origin point Z to reference framework depth for FK,
     ! where top of lower half-space has to be at z==0
     zz0 = zz0 - Z_REF_for_FK
@@ -941,7 +944,7 @@
   NPTS_STORED = npts2
   NPTS_INTERP = npoints2
 
-  nn = int(-t0/dt) ! what if this is not an integer number?
+  nn = int(-t0/dt_fk) ! what if this is not an integer number?
 
   !! DK DK Aug 2016: if this routine is called many times (for different mesh points at which the SEM is coupled with FK)
   !! DK DK Aug 2016: this should be moved to the calling program and precomputed once and for all
@@ -1118,6 +1121,9 @@
   master_stf_coeff(:) = (0.0_CUSTOM_REAL,0.0_CUSTOM_REAL)
   call compute_spectral_stf_coeff(time_function_type_fk, nf2, fvec, Tg, master_stf_coeff)               !! apodization window
 
+  ! broadcast master_stf_coeff to all ranks
+  call bcast_all_c(master_stf_coeff, nf2)
+
   ! loop every point to calculate stress/velocity
   do iface = 1,num_abs_boundary_faces
     ispec = abs_boundary_ispec(iface)
@@ -1292,7 +1298,10 @@
         ! inverse FFT
         call FFTinv(npow,field_f(:,j),zign_neg,dt,field(:,j),mpow)
 
-        ! wrap around to start from t0: here one has to be careful if t0/dt is not
+        ! FFTshift: shift zero time to the beginning of the time series
+        call fftshift_real(field(:,j), npts2)
+
+        ! wrap around to start from t0: here one has to be careful if t0/dt_fk is not
         ! exactly an integer, assume nn > 0
         if (nn > 0) then
           dtmp(1:nn) = field(npts2-nn+1:npts2,j)
@@ -4411,14 +4420,18 @@ contains
   
   ! Generic function call for source-time function in spectral domain
   ! You may add more options here
+  !
   ! PARAMETER:
   ! option:     1 = Gaussian window
-  !             else = Old Gaussian window
-  ! f:          frequency
-  ! Tg:         time window
+  !             4 = read from file (source_time_function_file_fk)
+  !             else = Gaussian window
+  ! nf2:        number of frequency points
+  ! f:          frequencies (array of size nf2)
+  ! Tg:         time window for Gaussian window (in seconds)
+  ! val:        output array of complex coefficients (size nf2)
     subroutine compute_spectral_stf_coeff(option, nf2, f, Tg, val)
 
-      use constants, only: CUSTOM_REAL, PI
+      use constants, only: myrank, CUSTOM_REAL, PI
       use specfem_par, only: t0
       use specfem_par_coupling, only: source_time_function_file_fk
   
@@ -4446,6 +4459,9 @@ contains
   
       ! SP: debugging
       real(kind=CUSTOM_REAL) :: f_fk
+
+      ! only main process reads
+      if (myrank /= 0) return
   
       allocate(om(nf2))
   
@@ -4625,3 +4641,31 @@ contains
         s(ii + npts / 2) = temp
       end do
     end subroutine fftshift
+
+    ! -------------------------------------------------------------------------------------------------
+
+  ! Swap the left half and the right half of an array for FFT
+  !
+  ! Parameters:
+  ! s           1-D array of real numbers with npts as the length
+  ! npts        the length of s, must be an even number
+  !
+  ! TODO: not implemented yet!!!!
+  ! If the length of the array is an odd number, the (origially) left half will have one more
+  ! element than the right half.
+    subroutine fftshift_real(s, npts)
+      implicit none
+
+      real(kind=4),intent(inout) :: s(*)
+      integer, intent(in) :: npts
+
+      ! local parameters
+      integer :: ii
+      real(kind=4) temp
+
+      do ii = 1, npts / 2
+        temp = s(ii)
+        s(ii) = s(ii + npts / 2)
+        s(ii + npts / 2) = temp
+      end do
+    end subroutine fftshift_real

@@ -481,6 +481,30 @@ end module my_mpi
 !-------------------------------------------------------------------------------------------------
 !
 
+  subroutine bcast_all_c(buffer, countval)
+
+    use my_mpi
+  
+    implicit none
+
+    integer, parameter :: CUSTOM_CMPLX = 8
+  
+    integer :: countval
+    complex(kind=CUSTOM_CMPLX), dimension(countval) :: buffer
+  
+    integer :: ier
+  
+    ! checks if anything to do
+    if (countval == 0) return
+  
+    call MPI_BCAST(buffer,countval,MPI_COMPLEX,0,my_local_mpi_comm_world,ier)
+  
+    end subroutine bcast_all_c
+  
+!
+!-------------------------------------------------------------------------------------------------
+!
+
   subroutine bcast_all_ch_array(buffer,countval,STRING_LEN)
 
   use my_mpi
