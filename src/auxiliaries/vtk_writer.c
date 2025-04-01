@@ -166,11 +166,31 @@ void FC_FUNC_(write_unstructured_mesh,
     int   conn_size = 0;
     int  *curr_conn = conn;
 
+    // Check if varname does not end with an underscore and a number.
+    // If it does, we will remove the underscore and the number for the output.
+    int   foundUnderscore = 0;
+    int   temp_varname_size = 0;
+
     filename[*filename_size] = '\0';
     varname[*varname_size] = '\0';
     useBinary = *ub;
     open_file(filename);
     write_header();
+
+    // remove the iteration number from the varname if it exists
+    // it looks for the last "_it" in the varname string
+    for (i = *varname_size - 3; i >= 0; i--)
+    {
+        if (varname[i] == '_' && varname[i + 1] == 'i' && varname[i + 2] == 't')
+        {
+            // found an underscore followed by "it", assume the iteration number follows
+            varname[i] = '\0';
+            // set the size of the varname to the new length
+            foundUnderscore = 1;
+            temp_varname_size = i; // this will be used to pass the size back to Fortran
+            break;
+        }
+    }
 
     write_string("DATASET UNSTRUCTURED_GRID\n");
     sprintf(str, "POINTS %d float\n", *npts);
@@ -209,4 +229,11 @@ void FC_FUNC_(write_unstructured_mesh,
             end_line();
 
     close_file();
+
+    // revert the varname back to its original value if we modified it
+    // this is to ensure that the Fortran code still has the correct value
+    if (foundUnderscore)
+    {
+        varname[temp_varname_size] = '_'; // put the underscore back
+    }
 }
