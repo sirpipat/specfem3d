@@ -314,7 +314,6 @@
     call bcast_all_singlecr(tt0)
     call bcast_all_singlecr(tmax_fk)
 
-    call bcast_all_singlecr(time_function_type_fk)
     call bcast_all_ch_array(source_time_function_file_fk, 1, 100)
 
     ! converts origin point Z to reference framework depth for FK,
@@ -1119,7 +1118,9 @@
   if (ier /= 0) call exit_MPI_without_rank('error allocating array 2226')
   if (ier /= 0) stop 'error while allocating'
   master_stf_coeff(:) = (0.0_CUSTOM_REAL,0.0_CUSTOM_REAL)
-  call compute_spectral_stf_coeff(time_function_type_fk, nf2, fvec, Tg, master_stf_coeff)               !! apodization window
+  if (myrank == 0) then
+    call compute_spectral_stf_coeff(time_function_type_fk, nf2, fvec, Tg, master_stf_coeff)
+  endif
 
   ! broadcast master_stf_coeff to all ranks
   call bcast_all_c(master_stf_coeff, nf2)
